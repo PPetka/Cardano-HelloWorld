@@ -61,6 +61,7 @@ library plinth-validators
   exposed-modules:
     AuctionMintingPolicy
     AuctionValidator
+    LottoValidator
 
 executable gen-auction-validator-blueprint
   import:         ghc-only-options, plutus-deps

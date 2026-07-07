@@ -3,3 +3,13 @@ dist-newstyle
 validator.uplc
 cabal.project.freeze
 result
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# HIE/LSP
+hie.yaml

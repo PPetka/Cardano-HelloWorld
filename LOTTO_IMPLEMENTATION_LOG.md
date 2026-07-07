@@ -207,3 +207,75 @@ AFTER:  { maintainer, ticketPrice }
 ---
 
 **Status**: Phase 1 Complete ✅ | Phase 2 (Logic Implementation) Pending 🔄
+
+---
+
+## Phase 2: Function Implementation - Iteration 1 ✅ COMPLETE
+
+**Date**: 2026-07-08  
+**Agent**: Copilot CLI  
+**Commit**: Implement buyerInList and exactlyOneADA validators  
+
+### Summary
+Implemented two core BuyTicket validation functions with positive logic patterns.
+
+### Implementation Details
+
+#### 1. **buyerInList** (Lines 100-104)
+- **Purpose**: Check if a PubKeyHash is already a participant in the lottery
+- **Logic**: Uses `List.find` to search `ldParticipants` list
+- **Returns**: `True` if buyer found, `False` if not found
+- **Design Pattern**: Positive assertion (negation applied at call site)
+  ```haskell
+  buyerInList buyer = case List.find (\p -> p PlutusTx.== buyer) (ldParticipants lotteryDatum) of
+    Nothing -> False
+    Just _  -> True
+  ```
+- **Usage**: `PlutusTx.not (buyerInList buyer)` ensures buyer is NOT already in the list
+
+#### 2. **exactlyOneADA** (Lines 106-116)
+- **Purpose**: Verify that exactly 1 ADA (1,000,000 Lovelace) is added to the pot
+- **Logic**: 
+  - Gets continuing outputs from transaction context
+  - Extracts new lottery datum from output
+  - Calculates pot increase: `newPot - oldPot`
+  - Verifies increase equals exactly 1,000,000 Lovelace
+- **Implementation**:
+  ```haskell
+  exactlyOneADA = case getContinuingOutputs ctx of
+    [o] -> case txOutDatum o of
+      OutputDatum (Datum newDatum) -> case PlutusTx.fromBuiltinData newDatum of
+        Just newLotteryDatum ->
+          let potIncrease = ldPot newLotteryDatum PlutusTx.- ldPot lotteryDatum
+           in potIncrease PlutusTx.== 1000000
+        Nothing -> False
+      _ -> False
+    _ -> False
+  ```
+
+### Design Decisions
+
+#### ✨ Positive Logic Pattern (FP Best Practice)
+- **Original approach**: `buyerNotInList` with implicit negation (returns True when NOT found)
+- **Refactored approach**: `buyerInList` with explicit negation at call site (`PlutusTx.not`)
+- **Benefits**:
+  - Function name matches implementation (clearer semantics)
+  - Logic is straightforward (no mental negation required)
+  - More reusable (could be used in other contexts)
+  - Reduces cognitive load and bug potential
+  - Follows functional programming best practices
+
+### Validation Results
+- ✅ Compilation: Success (no type errors)
+- ✅ All executables built
+- ✅ Functions inline-able for Plutus script optimization
+
+### Remaining Stubbed Functions (Phase 2 Pending)
+- `validBuyingTime` - POSIXTime interval check
+- `correctDatumUpdate` - Output UTXO datum validation
+- `validDrawTime` - After-deadline check  
+- `selectWinners` - Seed-based deterministic randomness
+- `calculateFees` - Payout math with rounding
+- `verifyPayouts` - Multi-output validation
+
+---

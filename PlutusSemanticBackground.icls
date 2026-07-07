@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scheme name="Plutus Semantic Background" version="173" parent_scheme="Default">
+  <attributes>
+    <!-- Pragmas & imports -->
+    <option name="KEYWORD">
+      <value>
+        <option name="BACKGROUND" value="ECEFF1" />
+      </value>
+    </option>
+
+    <!-- Types / data / newtypes -->
+    <option name="CLASS_NAME">
+      <value>
+        <option name="BACKGROUND" value="E3F2FD" />
+      </value>
+    </option>
+
+    <!-- Top-level constants / declarations -->
+    <option name="CONSTANT">
+      <value>
+        <option name="BACKGROUND" value="E0F2F1" />
+      </value>
+    </option>
+
+    <!-- Pure helpers / utilities -->
+    <option name="FUNCTION_DECLARATION">
+      <value>
+        <option name="BACKGROUND" value="F3E5F5" />
+      </value>
+    </option>
+
+    <!-- Business logic / domain rules -->
+    <option name="METHOD">
+      <value>
+        <option name="BACKGROUND" value="E8EAF6" />
+      </value>
+    </option>
+
+    <!-- On-chain / Template Haskell / Plutus lifting -->
+    <option name="ANNOTATION">
+      <value>
+        <option name="BACKGROUND" value="FFF3E0" />
+      </value>
+    </option>
+
+    <!-- Off-chain / endpoints / clients -->
+    <option name="FUNCTION_CALL">
+      <value>
+        <option name="BACKGROUND" value="E8F5E9" />
+      </value>
+    </option>
+
+    <!-- Monadic effects / IO / Tx building -->
+    <option name="LOCAL_VARIABLE">
+      <value>
+        <option name="BACKGROUND" value="F1F8E9" />
+      </value>
+    </option>
+
+    <!-- Comments / docs -->
+    <option name="LINE_COMMENT">
+      <value>
+        <option name="BACKGROUND" value="F5F5F5" />
+      </value>
+    </option>
+    <option name="BLOCK_COMMENT">
+      <value>
+        <option name="BACKGROUND" value="F5F5F5" />
+      </value>
+    </option>
+
+    <!-- Warnings / TODOs -->
+    <option name="TODO_DEFAULT">
+      <value>
+        <option name="BACKGROUND" value="FFF8E1" />
+      </value>
+    </option>
+  </attributes>
+</scheme>

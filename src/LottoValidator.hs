@@ -85,7 +85,7 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     conditions = case redeemer of
       BuyTicket buyer ->
         [ validBuyingTime
-        , buyerNotInList buyer
+        , PlutusTx.not (buyerInList buyer)
         , exactlyOneADA
         , correctDatumUpdate buyer
         ]
@@ -97,13 +97,23 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     {-# INLINEABLE validBuyingTime #-}
     validBuyingTime = True
 
-    buyerNotInList :: PubKeyHash -> Bool
-    {-# INLINEABLE buyerNotInList #-}
-    buyerNotInList _ = True
+    buyerInList :: PubKeyHash -> Bool
+    {-# INLINEABLE buyerInList #-}
+    buyerInList buyer = case List.find (\p -> p PlutusTx.== buyer) (ldParticipants lotteryDatum) of
+      Nothing -> False
+      Just _  -> True
 
     exactlyOneADA :: Bool
     {-# INLINEABLE exactlyOneADA #-}
-    exactlyOneADA = True
+    exactlyOneADA = case getContinuingOutputs ctx of
+      [o] -> case txOutDatum o of
+        OutputDatum (Datum newDatum) -> case PlutusTx.fromBuiltinData newDatum of
+          Just newLotteryDatum ->
+            let potIncrease = ldPot newLotteryDatum PlutusTx.- ldPot lotteryDatum
+             in potIncrease PlutusTx.== 1000000
+          Nothing -> False
+        _ -> False
+      _ -> False
 
     correctDatumUpdate :: PubKeyHash -> Bool
     {-# INLINEABLE correctDatumUpdate #-}

@@ -6,12 +6,31 @@ or reviewing Plinth/Plutus smart contract code.
 ## Reporting Rule
 
 When implementing, changing, or reviewing code using any rule below, explicitly
-tell the user which instruction point was applied. Use a short section such as:
+tell the user which instruction point was applied, and explain what that point
+means in the context of the actual code touched. Write this for someone who is
+new to Plutus: include the practical reason, the relevant code shape, and the
+tradeoff if useful.
+
+Use a section near the end of the response such as:
 
 ```text
 Instruction points applied:
-- P2: Kept on-chain code simple Plinth and avoided unsupported Haskell features.
+- P4: Kept the on-chain code simple Plinth.
+  In this change, I used a plain helper function and normal pattern matching
+  instead of advanced Haskell features. This matters because Plinth is only a
+  subset of Haskell, and code compiled into a validator cannot use everything
+  ordinary Haskell can use.
+
 - P6: Used INLINEABLE rather than INLINE.
+  The helper is part of on-chain code, so it needs its unfolding available to the
+  Plinth compiler. `INLINEABLE` exposes the function body while still letting
+  the Plinth/PIR/UPLC optimizers decide whether inlining is actually good for
+  script size and execution budget.
+
+- P8: Preserved short-circuiting behavior.
+  The validation condition still uses `PlutusTx.&&` directly. In Plinth, ordinary
+  function arguments are strict, so wrapping `&&` in a custom helper could make
+  both sides evaluate even when the first side already fails.
 ```
 
 If a rule is intentionally not followed, explain why.

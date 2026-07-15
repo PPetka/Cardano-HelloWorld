@@ -89,8 +89,8 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
           currentTxInputValueMatchesDatumPot
         , -- One wallet should not be able to buy twice in the same round.
           PlutusTx.not (buyerInList buyer)
-        , -- TODO: require `buyer` to be present in txInfoSignatories.
-          -- Without that, someone can add another wallet to the participant list.
+        , -- The participant being added must approve the transaction.
+          -- Without this, someone can add another wallet to the participant list.
           buyerSigned buyer
         , -- The next datum must increase the total script Lovelace by exactly one ticket.
           nextDatumPotIncreasesByTicketPrice
@@ -118,8 +118,9 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
 
     buyerSigned :: PubKeyHash -> Bool
     {-# INLINEABLE buyerSigned #-}
-    -- TODO: check `buyer` against txInfoSignatories in the next BuyTicket auth pass.
-    buyerSigned _ = True
+    buyerSigned buyer = case List.find (PlutusTx.== buyer) (txInfoSignatories txInfo) of
+      Nothing -> False
+      Just _  -> True
 
     currentRoundEndTime :: POSIXTime
     {-# INLINEABLE currentRoundEndTime #-}

@@ -85,6 +85,35 @@ If a rule is intentionally not followed, explain why.
 - **P12. Remove development traces from production scripts.** Traces are useful
   while debugging but cost size and budget. Prefer the `remove-trace` plugin flag
   or equivalent production path before mainnet deployment.
+- **P12a. Add comments for non-obvious on-chain logic.** This project is written
+  for a Plutus beginner. When adding or changing validator logic, add short
+  comments near checks that explain the business rule and the Plutus/EUTXO reason
+  for the check. Prefer comments that explain why the check exists, not comments
+  that merely restate the code. Keep comments close to the relevant code, and
+  avoid long essays inside hot on-chain functions. When Plutus naming is not
+  obvious, add a brief hint; for example, explain that a "continuing output" is
+  the next UTxO locked by the same script so the contract state can continue.
+  When a check appears only in one redeemer branch, comment why that path needs
+  it and why the other path does not.
+- **P12b. Explain common Plutus helpers during reviews and discussions.** When
+  discussing code with the user, briefly explain recurring Plutus/Plinth helpers,
+  classes, and data types in context when they are not obvious: examples include
+  `liftCode`, `makeIsDataSchemaIndexed`, `BuiltinData`, `Datum`, `Redeemer`,
+  `ScriptContext`, `findOwnInput`, `getContinuingOutputs`, `txInInfoResolved`,
+  `txOutValue`, and datum decoding/updating helpers. Say whether the thing is a
+  type, function, class, field accessor, constructor, or compiler/plugin helper;
+  where it comes from; what inputs it takes; what it returns; and how it affects
+  the current validator. For functions used often in Plutus code, explain them
+  more deeply than a one-line glossary. Prefer explanations tied to the current
+  code over generic documentation-style descriptions.
+- **P12c. Use current/next naming for state transitions.** In stateful validators,
+  call the datum, txInput, txOutput, and values being spent from the blockchain
+  `current...`. Call the datum, txOutput, and values produced by the transaction
+  `next...`. Reserve "continuing output" for the Plutus ledger/API concept: an
+  output locked by the same script, usually carrying the next state. Prefer names
+  like `currentDatum`, `currentTxInputValue`, `nextDatum`, and
+  `nextTxOutputHasExpectedPot` over mixed words such as `old`, `new`, or
+  domain-unclear `continuing...` helper names.
 
 ## Data and Script Context
 
@@ -122,8 +151,14 @@ If a rule is intentionally not followed, explain why.
 
 ## Measurement and Validation
 
-- **P22. Optimize only after measuring unless the issue is obvious.** First make
-  the contract correct and simple, then measure script size and execution budget.
+- **P22. Make the business rule correct before optimizing.** Do not encode clever
+  shortcuts, artificial constants, or performance-motivated assumptions until
+  the protocol rule is clear. First make the validator express the intended
+  invariant in simple code. For example, if a datum field is defined as "total
+  Lovelace locked at the script UTxO", do not reset it to `0` just because that
+  is convenient; check it against the real continuing output value. After the
+  rule is correct and readable, measure script size and execution budget before
+  doing budget-focused optimizations.
 - **P23. Use profiling for budget questions.** For CPU/memory issues, compile
   with profiling options and evaluate fully applied scripts with the `uplc`
   tooling where feasible.
@@ -144,7 +179,7 @@ then budget/performance issues, then style/maintainability.
 Use this checklist:
 
 - Version target and script type: P1-P3
-- Plinth subset, strictness, pragmas, flags: P4-P8
+- Plinth subset, comments, strictness, pragmas, flags: P4-P8, P12a-P12c
 - Budget shape and hot-path structure: P9-P16, P22-P23
 - Security/protocol checks: P17-P21
 - Build, blueprint, and artifact validation: P24-P25

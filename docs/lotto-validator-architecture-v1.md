@@ -18,10 +18,41 @@ There are two user-facing actions:
    new round, or rolls the round over when there are fewer than three
    participants.
 
-The validator is written as a Plutus V3 spending validator. In V3, the validator
-receives one `BuiltinData` value for the whole script context. The datum and
-redeemer are extracted from `ScriptContext`, not passed as separate validator
-arguments.
+> [!NOTE]
+> **Plutus architecture note: V3 validator shape**
+>
+> The validator is written as a Plutus V3 spending validator. In V3, the
+> validator receives one `BuiltinData` value for the whole script context. The
+> datum and redeemer are extracted from `ScriptContext`, not passed as separate
+> validator arguments.
+
+## Document Scope
+
+This document explains the whole lotto validator architecture: how the script
+UTxO is spent, how the datum changes, which redeemer branch runs, and how the
+next on-chain state is checked.
+
+`docs/oracle-architecture-v1.md` is narrower. It explains only the randomness
+subsystem used by the `Draw` branch: oracle seed messages, Ed25519 signatures,
+seed combination, and replay resistance.
+
+In short:
+
+```text
+lotto-validator-architecture-v1.md
+  whole validator state machine
+  BuyTicket path
+  Draw path
+  current/next UTxO checks
+  backend transaction responsibilities
+
+oracle-architecture-v1.md
+  Draw randomness only
+  oracle message bytes
+  signature verification
+  seed combination
+  oracle-specific risks
+```
 
 ## High-Level Contract Shape
 
@@ -41,9 +72,12 @@ transaction creates exactly one continuing script output
   datum: next LotteryDatum
 ```
 
-Plutus calls the next output a "continuing output": it is an output locked by the
-same validator. In this lotto contract, the continuing output is how the next
-lottery state is stored on-chain.
+> [!NOTE]
+> **Plutus architecture note: continuing output**
+>
+> Plutus calls the next output a "continuing output": it is an output locked by
+> the same validator. In this lotto contract, the continuing output is how the
+> next lottery state is stored on-chain.
 
 The validator does not store hidden state. It only checks the datum, the value
 locked at the current script UTxO, the transaction validity interval, signatures,
@@ -99,9 +133,12 @@ The datum is the contract's local copy of the lottery state:
 - `ldPot` records how much Lovelace the script believes is locked in the lottery
   pot.
 
-The validator also checks the real Lovelace value of the current script UTxO.
-This matters because a datum is just data. The transaction cannot be allowed to
-claim `ldPot = 100 ADA` while the actual spent script UTxO contains less.
+> [!NOTE]
+> **Plutus architecture note: datum versus value**
+>
+> The validator also checks the real Lovelace value of the current script UTxO.
+> This matters because a datum is just data. The transaction cannot be allowed to
+> claim `ldPot = 100 ADA` while the actual spent script UTxO contains less.
 
 ### `OracleSeed`
 
@@ -136,6 +173,13 @@ data LotteryRedeemer
 
 ## Validator Entry Point
 
+> [!NOTE]
+> **Plutus architecture note: boundary decoding**
+>
+> This section describes the boundary between raw Plutus data and typed validator
+> logic. The chain gives the script `BuiltinData`; this code decodes that into a
+> `ScriptContext`, then extracts typed values before running the business rules.
+
 The compiled validator entry point is:
 
 ```haskell
@@ -162,6 +206,104 @@ keeps the validator easier to read: most helper functions operate on
 `LotteryDatum`, `LotteryRedeemer`, `TxOut`, `Lovelace`, and `PubKeyHash` instead
 of raw `BuiltinData`.
 
+### Validator Dependency Tree
+
+Markdown can show this as a plain-text tree, which is the most portable option:
+
+```text
+lottoValidatorScript params
+`-- compiles and applies params to lottoUntypedValidator
+    `-- lottoUntypedValidator params ctxBuiltinData
+        |-- decodes ctxBuiltinData
+        |   `-- ScriptContext
+        `-- lottoTypedValidator params ctx
+            |-- scriptRedeemer
+            |   `-- getRedeemer
+            |       `-- LotteryRedeemer
+            |           |-- BuyTicket buyer
+            |           |   |-- validBuyTime
+            |           |   |   `-- txInfoValidRange
+            |           |   |-- currentTxInputValueMatchesDatumPot
+            |           |   |   |-- findOwnInput
+            |           |   |   |-- txInInfoResolved
+            |           |   |   |-- txOutValue
+            |           |   |   `-- ldPot currentDatum
+            |           |   |-- buyerInList
+            |           |   |   `-- ldParticipants currentDatum
+            |           |   |-- buyerSigned
+            |           |   |   `-- txInfoSignatories
+            |           |   |-- nextDatumPotIncreasesByTicketPrice
+            |           |   |   `-- nextTxOutputWithDatum
+            |           |   |-- nextTxOutputHasExpectedPot
+            |           |   |   `-- nextTxOutputWithDatum
+            |           |   `-- nextDatumAddsBuyer
+            |           |       `-- nextTxOutputWithDatum
+            |           `-- Draw oracleSeed1 oracleSeed2 oracleSeed3
+            |               |-- validDrawTime
+            |               |   `-- txInfoValidRange
+            |               |-- currentTxInputValueMatchesDatumPot
+            |               |-- oracleSeedsSigned
+            |               |   |-- oracleSeedSigned oracle1PublicKey oracleSeed1
+            |               |   |-- oracleSeedSigned oracle2PublicKey oracleSeed2
+            |               |   `-- oracleSeedSigned oracle3PublicKey oracleSeed3
+            |               |       |-- oracleMessage
+            |               |       |   |-- ldRoundEndTime currentDatum
+            |               |       |   |-- ldPot currentDatum
+            |               |       |   `-- osSeed
+            |               |       `-- verifyEd25519Signature
+            |               |-- combinedSeed
+            |               |   `-- blake2b_256 seed bytes
+            |               `-- drawTransitionValid
+            |                   |-- enoughParticipants
+            |                   |   `-- ldParticipants currentDatum
+            |                   |-- nextTxOutputStartsNewRound
+            |                   |   `-- nextTxOutputWithDatum
+            |                   |-- nextTxOutputRollsOverRound
+            |                   |   `-- nextTxOutputWithDatum
+            |                   `-- verifyPayouts
+            |                       `-- selectWinners
+            |                           |-- winnerIndex
+            |                           |-- selectAt
+            |                           `-- removeWinner
+            |-- scriptInfo
+            |   `-- currentDatum
+            `-- txInfo
+                |-- inputs / own input
+                |-- outputs / continuing output
+                |-- valid range
+                `-- signatories
+```
+
+The same structure as a Mermaid diagram, for renderers that support Mermaid:
+
+```mermaid
+flowchart TD
+  A[lottoValidatorScript params] --> B[lottoUntypedValidator params BuiltinData]
+  B --> C[Decode BuiltinData to ScriptContext]
+  C --> D[lottoTypedValidator params ctx]
+  D --> E[Decode LotteryRedeemer from scriptRedeemer]
+  D --> F[Decode currentDatum from scriptInfo]
+  D --> G[Read txInfo]
+  E --> H{Redeemer branch}
+  H --> I[BuyTicket buyer]
+  H --> J[Draw oracleSeed1 oracleSeed2 oracleSeed3]
+  I --> I1[validBuyTime]
+  I --> I2[currentTxInputValueMatchesDatumPot]
+  I --> I3[buyerInList / buyerSigned]
+  I --> I4[nextTxOutputWithDatum checks]
+  J --> J1[validDrawTime]
+  J --> J2[currentTxInputValueMatchesDatumPot]
+  J --> J3[oracleSeedsSigned]
+  J --> J4[combinedSeed]
+  J --> J5[drawTransitionValid]
+  J3 --> K[oracleMessage]
+  K --> F
+  K --> L[verifyEd25519Signature]
+  J5 --> M{enough participants?}
+  M --> N[next round + verifyPayouts]
+  M --> O[rollover round]
+```
+
 ## Shared Validation Checks
 
 Both `BuyTicket` and `Draw` depend on the current script UTxO being honest.
@@ -174,8 +316,13 @@ The validator uses:
 findOwnInput ctx
 ```
 
-`findOwnInput` is a Plutus helper that finds the transaction input currently
-spending this validator. The code then uses:
+> [!NOTE]
+> **Plutus architecture note: own input**
+>
+> `findOwnInput` is a Plutus helper that finds the transaction input currently
+> spending this validator.
+
+The code then uses:
 
 ```haskell
 txInInfoResolved txInput
@@ -202,6 +349,12 @@ it, a transaction could carry a misleading datum and make payout or rollover
 logic reason about the wrong amount.
 
 ### Continuing Output Lookup
+
+> [!NOTE]
+> **Plutus architecture note: next script state**
+>
+> State transitions use `getContinuingOutputs ctx` to find the next output
+> locked by the same validator. That output carries the next lotto datum.
 
 State transitions use:
 

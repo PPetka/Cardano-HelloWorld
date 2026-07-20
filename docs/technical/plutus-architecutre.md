@@ -24,12 +24,11 @@ current script UTxO
 The current implementation supports two redeemer actions:
 
 - `BuyTicket buyer`
-- `Draw oracleSeed1 oracleSeed2 oracleSeed3`
+- `Draw caller oracleSeed1 oracleSeed2 oracleSeed3`
 
-Winner selection and oracle signature checking exist. Payout enforcement is
-still incomplete: `verifyPayouts` currently confirms that three winners can be
-selected, but it does not yet check transaction outputs that pay those winners or
-the maintainer.
+Winner selection, oracle signature checking, and payout-output checking exist.
+`verifyPayouts` checks the outputs that pay the maintainer, the signed draw
+caller, and the three selected winners.
 
 ## Validator Entry Points
 
@@ -94,16 +93,17 @@ data LotteryDatum = LotteryDatum
   }
 ```
 
-The datum records the deadline, the participant list, and the pot. The pot is
-only trusted after the validator compares it with the real Lovelace locked in
-the script input.
+The datum records the deadline, the participant list, and the prize pot. The
+script UTxO can hold extra non-prize ADA so it can continue after a draw. The
+pot is only trusted after the validator checks that the real Lovelace locked in
+the script input covers it.
 
 `LotteryRedeemer` selects the action:
 
 ```haskell
 data LotteryRedeemer
   = BuyTicket PubKeyHash
-  | Draw OracleSeed OracleSeed OracleSeed
+  | Draw PubKeyHash OracleSeed OracleSeed OracleSeed
 ```
 
 For `BuyTicket`, the `PubKeyHash` is the buyer being added. For `Draw`, each
@@ -190,13 +190,15 @@ currentTxInputValue =
 The datum pot is checked against that value before it is trusted:
 
 ```haskell
-currentTxInputValueMatchesDatumPot =
-  currentTxInputValue == ldPot currentDatum
+currentTxInputValueCoversDatumPot =
+  currentTxInputValue >= ldPot currentDatum
 ```
 
 This is important in EUTXO code. A datum is just data attached to a UTxO; it can
 claim a pot amount. `txOutValue` is the ledger value actually locked by that
-UTxO. The validator needs both to agree.
+UTxO. The validator requires the real UTxO value to cover the recorded prize
+pot. Extra ADA can remain at the script as non-prize reserve for the continuing
+state UTxO.
 
 Both branches also need the next lottery state. Plutus calls the next UTxO
 locked by this same script a continuing output:
@@ -229,7 +231,7 @@ pass:
 ```haskell
 BuyTicket buyer ->
   [ validBuyTime
-  , currentTxInputValueMatchesDatumPot
+  , currentTxInputValueCoversDatumPot
   , PlutusTx.not (buyerInList buyer)
   , buyerSigned buyer
   , nextDatumPotIncreasesByTicketPrice
@@ -258,7 +260,7 @@ lovelaceValueOf (txOutValue nextTxOutput) ==
 
 The first check says the next datum records exactly one new ticket. The second
 check says the next script output actually locks that extra Lovelace. Together
-with `currentTxInputValueMatchesDatumPot`, this ties the state transition to
+with `currentTxInputValueCoversDatumPot`, this ties the state transition to
 the real ADA controlled by the script.
 
 `nextDatumAddsBuyer` preserves the current round end time and prepends the buyer
@@ -276,13 +278,20 @@ list positions.
 The `Draw` branch accepts a transaction only when all of these checks pass:
 
 ```haskell
-Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
-  [ validDrawTime
-  , currentTxInputValueMatchesDatumPot
-  , oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3
-  , drawTransitionValid (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
+Draw caller oracleSeed1 oracleSeed2 oracleSeed3 ->
+  [ traceIfFalse "Draw: too early" validDrawTime
+  , traceIfFalse "Draw: current input does not cover datum pot" currentTxInputValueCoversDatumPot
+  , traceIfFalse "Draw: caller did not sign" (callerSigned caller)
+  , traceIfFalse "Draw: caller reward bounds invalid" callerRewardBoundsValid
+  , traceIfFalse "Draw: oracle seed signature invalid" (oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3)
+  , traceIfFalse "Draw: state transition or payouts invalid" (drawTransitionValid caller (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3))
   ]
 ```
+
+`callerSigned` checks `txInfoSignatories`, the list of public key hashes that
+signed this transaction. The caller is explicit in the redeemer because a
+transaction can have several signers, so the validator should not guess which
+signer earns the reward.
 
 `validDrawTime` requires the transaction validity interval to be at or after
 `ldRoundEndTime`. This keeps the draw from closing the round early.
@@ -309,7 +318,7 @@ as the raw seed bytes.
 
 ```haskell
 if enoughParticipants
-  then nextTxOutputStartsNewRound && verifyPayouts seed
+  then nextTxOutputStartsNewRound && verifyPayouts caller seed
   else nextTxOutputRollsOverRound
 ```
 
@@ -317,19 +326,30 @@ With at least three participants, the next datum must start a fresh round:
 
 - round end time increases by one day;
 - participant list becomes empty;
-- next datum pot matches the Lovelace in the next script output.
+- next datum prize pot is reset to zero;
+- next script output keeps only the non-prize script reserve.
 
-The code then calls `verifyPayouts`. This is the current production gap:
-`verifyPayouts` does not yet inspect `txInfoOutputs` for winner and maintainer
-payments. Until that is implemented, the draw branch can prove that winners are
-selectable, but it cannot prove that the transaction pays them correctly.
+The code then calls `verifyPayouts`. It inspects `txInfoOutputs` and requires
+the maintainer, caller, and winners to receive at least the amounts calculated
+from the payout rule. Overpayment is allowed, so extra off-chain inputs can add
+more ADA to a recipient without invalidating the draw.
+
+The payout rule is:
+
+- maintainer receives 4% of the prize pot;
+- caller receives at least `lpMinCallerReward`, at most `lpMaxCallerReward`,
+  and never more than what remains after maintenance;
+- winner 1 receives 50% of the remaining prize pool;
+- winner 2 receives 30% of the remaining prize pool;
+- winner 3 receives the remainder.
 
 With fewer than three participants, the rollover path is used instead:
 
 - round end time increases by one day;
 - participant list is preserved;
-- pot is preserved;
-- next script output still locks that same pot.
+- prize pot is preserved;
+- next script output preserves the full current script value, including any
+  non-prize reserve ADA.
 
 The rollover path intentionally does not call `verifyPayouts`, because no
 winners are paid when the round has fewer than three participants.
@@ -394,11 +414,10 @@ reason to change them.
 
 ## Current Gaps To Track
 
-- Implement real `verifyPayouts` against transaction outputs.
-- Define the exact prize split and maintainer fee rule.
 - Add negative tests for missing buyer signatures, duplicate buyers, bad oracle
   signatures, wrong oracle order, wrong timing, malformed next datums, and bad
   pot transitions.
+- Add negative tests for missing caller signatures and underpaid payout outputs.
 - Consider bounding `ldParticipants` or redesigning ticket representation before
   high-volume rounds.
 - Build the relevant Cabal target and regenerate/check blueprints after any

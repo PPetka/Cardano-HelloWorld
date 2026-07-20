@@ -79,13 +79,14 @@ The backend has to understand a few Plutus terms.
 
 - `ldRoundEndTime`: when ticket buying closes;
 - `ldParticipants`: wallet public key hashes that bought tickets this round;
-- `ldPot`: the recorded Lovelace pot.
+- `ldPot`: the recorded Lovelace prize pot. The script UTxO may also carry
+  extra non-prize ADA needed to keep the continuing state UTxO alive.
 
 `LotteryRedeemer` is the action submitted when spending the script UTxO. It is
 either:
 
 - `BuyTicket buyer`;
-- `Draw oracleSeed1 oracleSeed2 oracleSeed3`.
+- `Draw caller oracleSeed1 oracleSeed2 oracleSeed3`.
 
 The script UTxO is the current lottery box. To change the lottery, a transaction
 spends the current script UTxO and creates a next script UTxO with the next
@@ -268,11 +269,13 @@ draw transaction will be rejected.
 Provider order matters:
 
 ```text
-Draw oracleSeed1 oracleSeed2 oracleSeed3
+Draw caller oracleSeed1 oracleSeed2 oracleSeed3
 ```
 
-`oracleSeed1` must match oracle public key 1, `oracleSeed2` must match oracle
-public key 2, and `oracleSeed3` must match oracle public key 3.
+`caller` is the public key hash claiming the successful-draw reward and must be
+one of the transaction signatories. `oracleSeed1` must match oracle public key
+1, `oracleSeed2` must match oracle public key 2, and `oracleSeed3` must match
+oracle public key 3.
 
 ## Draw State Transition
 
@@ -284,13 +287,21 @@ a fresh round:
 ```text
 next round end time = current round end time + 1 day
 next participants   = empty list
-next pot            = value locked at the next script UTxO
+next pot            = 0
 ```
 
-The current implementation can select winners, but payout enforcement is not
-complete yet. Before production, the backend and validator need the final payout
-rules. The backend will then need to include outputs that pay winners and the
-maintainer exactly as the validator expects.
+The backend must include payout outputs that pay at least the expected amounts:
+
+- maintainer: 4% of the prize pot;
+- caller: `min(lpMaxCallerReward, max(1% of pot, lpMinCallerReward))`, capped
+  again by the pot left after maintenance;
+- winner 1: 50% of the remaining prize pool;
+- winner 2: 30% of the remaining prize pool;
+- winner 3: the rest of the remaining prize pool.
+
+Overpayment is allowed. For example, if a winner should receive 10 ADA, paying
+11 ADA also passes. This is intentional so extra non-script inputs can top up an
+output without breaking the draw.
 
 When there are fewer than three participants, the low-participation path rolls
 the round forward:
@@ -413,10 +424,10 @@ For scheduled draws, alert if:
 5. Add transaction submission and confirmation tracking.
 6. Add retry handling for stale UTxO buy-ticket failures.
 7. Implement oracle clients and byte-level oracle message tests.
-8. Implement the draw worker without payout assumptions beyond the current
-   validator behavior.
+8. Implement the draw worker with the current payout rule: maintainer, caller,
+   and three winner outputs.
 9. Add monitoring and admin retry tools.
-10. After payout rules are finalized, update draw transaction outputs and tests.
+10. Add draw transaction tests for missing and underpaid payout outputs.
 
 Do not start with the midnight bot. The bot depends on state indexing,
 transaction building, oracle clients, submission, and retries. Build those pieces
@@ -427,8 +438,6 @@ first, then the scheduled worker becomes mostly orchestration.
 This backend can support demos and development, but the protocol is not finished
 for production until these are resolved:
 
-- winner payout enforcement;
-- exact prize split and maintainer fee;
 - negative tests for unauthorized and malformed transactions;
 - participant-list scaling;
 - stronger handling of oracle withholding and transaction withholding;

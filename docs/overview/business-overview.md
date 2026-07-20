@@ -150,15 +150,12 @@ prize draws, and promotional lotteries where transparency matters.
 
 This is not yet a finished production lottery.
 
-The biggest missing business feature is payout enforcement. The current
-validator can identify winners, but the payout rules still need to be completed
-so the contract checks that winners actually receive the right amounts.
+The validator now checks payout outputs for successful draws. It requires the
+maintainer, the signed draw caller, and the three selected winners to receive at
+least the published amounts.
 
 Before launch, the project still needs:
 
-- final prize split;
-- final maintainer fee rule;
-- payout enforcement;
 - tests for bad or dishonest transactions;
 - a better plan for very large numbers of participants;
 - stronger protection against someone refusing to submit an unfavorable draw;

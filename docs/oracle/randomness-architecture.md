@@ -448,20 +448,23 @@ This avoids awkward partial-prize logic and keeps user funds in the next round.
 The draw branch currently checks:
 
 ```haskell
-Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
+Draw caller oracleSeed1 oracleSeed2 oracleSeed3 ->
   [ validDrawTime
-  , currentTxInputValueMatchesDatumPot
+  , currentTxInputValueCoversDatumPot
+  , callerSigned caller
+  , callerRewardBoundsValid
   , oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3
-  , drawTransitionValid (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
+  , drawTransitionValid caller (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
   ]
 ```
 
 The order is readable:
 
 1. Check that this is actually draw time.
-2. Check that the current datum honestly describes the current script UTxO value.
-3. Check oracle authorization.
-4. Check the state transition: payout path or rollover path.
+2. Check that the current script UTxO covers the recorded prize pot.
+3. Check that the explicit caller signed the transaction.
+4. Check oracle authorization.
+5. Check the state transition: payout path or rollover path.
 
 The list is later consumed with `List.and`, so cost-sensitive versions may need direct `&&` structure if short-circuiting and evaluation order become important.
 
@@ -474,17 +477,19 @@ The backend must:
 3. Ask each oracle for a seed and signature, or run three independent oracle services.
 4. Construct the exact message bytes for each seed.
 5. Verify signatures off-chain before building the transaction.
-6. Build the `Draw` redeemer with three `OracleSeed` values.
+6. Build the `Draw` redeemer with the caller public key hash and three
+   `OracleSeed` values.
 7. Build the continuing output:
    - new round state if there are at least three participants;
    - rollover state if there are fewer than three participants.
-8. Build payout outputs once `verifyPayouts` is implemented.
+8. Build payout outputs for the maintainer, caller, and three winners when
+   there are at least three participants.
 
 ## Current Production Gaps
 
 The following are intentionally not complete in v1:
 
-- `verifyPayouts` does not yet verify actual payment outputs.
+- Payout output tests are still needed for missing and underpaid recipients.
 - There are no tests yet for invalid oracle signatures.
 - There are no tests yet for seed order changes.
 - The byte encoding should be mirrored in backend tests.
@@ -600,7 +605,6 @@ This means the current validator fits best with:
 
 Likely next improvements:
 
-- implement real payout verification;
 - define the backend byte encoder with tests against the example hex;
 - add negative tests for wrong oracle key, wrong pot, wrong round end, wrong seed order;
 - decide whether seeds should be published through on-chain oracle UTxOs instead of redeemer fields;

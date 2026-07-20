@@ -3,7 +3,7 @@ module LottoValidator where
 import GHC.Generics (Generic)
 
 import PlutusCore.Version (plcVersion110)
-import PlutusLedgerApi.V3 (Datum (..), Lovelace, OutputDatum (..),
+import PlutusLedgerApi.V3 (Datum (..), Lovelace (..), OutputDatum (..),
                            POSIXTime (..), PubKeyHash, Redeemer (..), ScriptContext (..),
                            ScriptInfo (..), TxInInfo (..), TxInfo (..), TxOut (..), from,
                            getRedeemer, to)
@@ -11,6 +11,7 @@ import PlutusLedgerApi.V3.Contexts (findOwnInput, getContinuingOutputs)
 import PlutusLedgerApi.V1.Interval (Interval (..), contains, strictUpperBound)
 import PlutusLedgerApi.V1.Value (lovelaceValueOf)
 import PlutusTx
+import PlutusTx.Builtins qualified as Builtins
 import PlutusTx.Blueprint
 import PlutusTx.Prelude qualified as PlutusTx
 import PlutusTx.List qualified as List
@@ -20,6 +21,12 @@ data LotteryParams = LotteryParams
   -- ^ Maintainer's public key hash who receives the maintenance fee.
   , lpTicketPrice :: Lovelace
   -- ^ Price per lottery ticket in Lovelace (1 ADA = 1,000,000 Lovelace).
+  , lpOracle1PublicKey :: PlutusTx.BuiltinByteString
+  -- ^ Raw Ed25519 public key for the first randomness oracle.
+  , lpOracle2PublicKey :: PlutusTx.BuiltinByteString
+  -- ^ Raw Ed25519 public key for the second randomness oracle.
+  , lpOracle3PublicKey :: PlutusTx.BuiltinByteString
+  -- ^ Raw Ed25519 public key for the third randomness oracle.
   }
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
@@ -44,10 +51,21 @@ data LotteryDatum = LotteryDatum
 
 PlutusTx.makeIsDataSchemaIndexed ''LotteryDatum [('LotteryDatum, 0)]
 
+data OracleSeed = OracleSeed
+  { osSeed      :: PlutusTx.BuiltinByteString
+  -- ^ Random bytes supplied by the oracle for the current round.
+  , osSignature :: PlutusTx.BuiltinByteString
+  -- ^ Ed25519 signature over the oracle message for this round and seed.
+  }
+  deriving stock (Generic)
+  deriving anyclass (HasBlueprintDefinition)
+
+PlutusTx.makeIsDataSchemaIndexed ''OracleSeed [('OracleSeed, 0)]
+
 {- | Redeemer is the input that changes the state of a smart contract.
 In this case it is either a BuyTicket action or a Draw action.
 -}
-data LotteryRedeemer = BuyTicket PubKeyHash | Draw PlutusTx.BuiltinByteString
+data LotteryRedeemer = BuyTicket PubKeyHash | Draw OracleSeed OracleSeed OracleSeed
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
 
@@ -99,15 +117,15 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
         , -- The next datum must preserve round timing and add current buyer.
           nextDatumAddsBuyer buyer
         ]
-      Draw oracleSeed ->
+      Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
         [ -- Draw can only happen once the round has ended.
           validDrawTime
         , -- Before paying/resetting the round, confirm currentDatum.ldPot matches the spent UTXO.
           currentTxInputValueMatchesDatumPot
-        , -- The next script txOutput must reset participants and advance the round end time.
-          nextTxOutputStartsNewRound
-        , -- TODO: verify winner/maintainer payouts; keep this last because it will scan outputs.
-          verifyPayouts oracleSeed
+        , -- Each oracle seed must be signed for this lottery version and current state.
+          oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3
+        , -- With fewer than 3 participants, no payout happens; the round rolls over.
+          drawTransitionValid (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
         ]
 
     buyerInList :: PubKeyHash -> Bool
@@ -208,22 +226,140 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
             PlutusTx.&& (ldParticipants nextDatum PlutusTx.== [])
             PlutusTx.&& (ldPot nextDatum PlutusTx.== lovelaceValueOf (txOutValue txOutput))
 
+    nextTxOutputRollsOverRound :: Bool
+    {-# INLINEABLE nextTxOutputRollsOverRound #-}
+    ~nextTxOutputRollsOverRound =
+      -- Not enough participants: keep participants/pot and advance the round end time.
+      let (txOutput, nextDatum) = nextTxOutputWithDatum
+       in (ldRoundEndTime nextDatum PlutusTx.== addPOSIXTime currentRoundEndTime oneDay)
+            PlutusTx.&& (ldParticipants nextDatum PlutusTx.== ldParticipants currentDatum)
+            PlutusTx.&& (ldPot nextDatum PlutusTx.== ldPot currentDatum)
+            PlutusTx.&& (ldPot nextDatum PlutusTx.== lovelaceValueOf (txOutValue txOutput))
+
+    drawTransitionValid :: PlutusTx.BuiltinByteString -> Bool
+    {-# INLINEABLE drawTransitionValid #-}
+    drawTransitionValid seed =
+      if enoughParticipants
+        then
+          nextTxOutputStartsNewRound
+            PlutusTx.&& verifyPayouts seed
+        else nextTxOutputRollsOverRound
+
+    enoughParticipants :: Bool
+    {-# INLINEABLE enoughParticipants #-}
+    enoughParticipants = List.length (ldParticipants currentDatum) PlutusTx.>= 3
+
+    integerToByteString :: Integer -> PlutusTx.BuiltinByteString
+    {-# INLINEABLE integerToByteString #-}
+    integerToByteString n =
+      if n PlutusTx.<= 0
+        then ""
+        else integerToByteString (n `PlutusTx.quotient` 256) PlutusTx.<> Builtins.consByteString (n `PlutusTx.modulo` 256) ""
+
+    oracleMessage :: PlutusTx.BuiltinByteString -> PlutusTx.BuiltinByteString -> PlutusTx.BuiltinByteString
+    {-# INLINEABLE oracleMessage #-}
+    {- Off-chain oracles must sign these exact bytes:
+       "lotto-v1|oracle:" <> oracleName <> "|round-end:" <> roundEndBytes <> "|pot:" <> potBytes <> "|seed:" <> seedBytes
+
+       Example for the backend/oracle:
+         oracle   = "oracle-1"
+         roundEnd = POSIXTime 1725235200000
+         pot      = Lovelace 10000000
+         seed     = "oracle-1-seed"
+
+       The labels separate the binary integer fields from each other and from the seed.
+       The oracle label binds a signature to its configured oracle slot.
+       Current state bytes prevent replaying a valid seed/signature in another round/state.
+    -}
+    oracleMessage oracleName seed =
+      let POSIXTime roundEnd = currentRoundEndTime
+          Lovelace pot = ldPot currentDatum
+       in "lotto-v1|oracle:"
+            PlutusTx.<> oracleName
+            PlutusTx.<> "|round-end:"
+            PlutusTx.<> integerToByteString roundEnd
+            PlutusTx.<> "|pot:"
+            PlutusTx.<> integerToByteString pot
+            PlutusTx.<> "|seed:"
+            PlutusTx.<> seed
+
+    oracleSeedSigned :: PlutusTx.BuiltinByteString -> PlutusTx.BuiltinByteString -> OracleSeed -> Bool
+    {-# INLINEABLE oracleSeedSigned #-}
+    oracleSeedSigned oracleName publicKey oracleSeed =
+      Builtins.verifyEd25519Signature publicKey (oracleMessage oracleName (osSeed oracleSeed)) (osSignature oracleSeed)
+
+    oracleSeedsSigned :: OracleSeed -> OracleSeed -> OracleSeed -> Bool
+    {-# INLINEABLE oracleSeedsSigned #-}
+    oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3 =
+      oracleSeedSigned "oracle-1" (lpOracle1PublicKey params) oracleSeed1
+        PlutusTx.&& oracleSeedSigned "oracle-2" (lpOracle2PublicKey params) oracleSeed2
+        PlutusTx.&& oracleSeedSigned "oracle-3" (lpOracle3PublicKey params) oracleSeed3
+
+    combinedSeed :: OracleSeed -> OracleSeed -> OracleSeed -> PlutusTx.BuiltinByteString
+    {-# INLINEABLE combinedSeed #-}
+    -- Fixed oracle order matters: each seed is tagged before hashing into the draw seed.
+    -- The tags make the combined hash depend on the oracle slot, not just raw byte order.
+    combinedSeed oracleSeed1 oracleSeed2 oracleSeed3 =
+      Builtins.blake2b_256
+        ( "lotto-v1|combined|oracle-1:"
+            PlutusTx.<> osSeed oracleSeed1
+            PlutusTx.<> "|oracle-2:"
+            PlutusTx.<> osSeed oracleSeed2
+            PlutusTx.<> "|oracle-3:"
+            PlutusTx.<> osSeed oracleSeed3
+        )
+
+    winnerIndex :: PlutusTx.BuiltinByteString -> Integer -> Integer
+    {-# INLINEABLE winnerIndex #-}
+    -- Use the first four bytes of a derived hash as an integer, then fit it into the list length.
+    winnerIndex seed participantCount =
+      let entropy =
+            (Builtins.indexByteString seed 0 PlutusTx.* 16_777_216)
+              PlutusTx.+ (Builtins.indexByteString seed 1 PlutusTx.* 65_536)
+              PlutusTx.+ (Builtins.indexByteString seed 2 PlutusTx.* 256)
+              PlutusTx.+ Builtins.indexByteString seed 3
+       in entropy `PlutusTx.modulo` participantCount
+
+    selectAt :: Integer -> [PubKeyHash] -> PubKeyHash
+    {-# INLINEABLE selectAt #-}
+    selectAt index participants = case participants of
+      [] -> PlutusTx.traceError "No participants"
+      participant : rest ->
+        if index PlutusTx.== 0
+          then participant
+          else selectAt (index PlutusTx.- 1) rest
+
+    removeWinner :: PubKeyHash -> [PubKeyHash] -> [PubKeyHash]
+    {-# INLINEABLE removeWinner #-}
+    removeWinner winner participants = case participants of
+      [] -> []
+      participant : rest ->
+        if participant PlutusTx.== winner
+          then rest
+          else participant : removeWinner winner rest
+
     selectWinners :: PlutusTx.BuiltinByteString -> [PubKeyHash]
     {-# INLINEABLE selectWinners #-}
-    selectWinners _ = case ldParticipants currentDatum of
-      (w1:w2:w3:_) -> [w1, w2, w3]
-      _ -> PlutusTx.traceError "Not enough participants for draw"
-
-    calculateFees :: (Lovelace, Lovelace, Lovelace, Lovelace)
-    {-# INLINEABLE calculateFees #-}
-    calculateFees =
-      let pot = ldPot currentDatum
-       in (pot, pot, pot, pot)
+    selectWinners seed =
+      let participants = ldParticipants currentDatum
+          seed1 = Builtins.blake2b_256 (seed PlutusTx.<> "1")
+          seed2 = Builtins.blake2b_256 (seed PlutusTx.<> "2")
+          seed3 = Builtins.blake2b_256 (seed PlutusTx.<> "3")
+          winner1 = selectAt (winnerIndex seed1 (List.length participants)) participants
+          remaining1 = removeWinner winner1 participants
+          winner2 = selectAt (winnerIndex seed2 (List.length remaining1)) remaining1
+          remaining2 = removeWinner winner2 remaining1
+          winner3 = selectAt (winnerIndex seed3 (List.length remaining2)) remaining2
+       in if enoughParticipants
+            then [winner1, winner2, winner3]
+            else PlutusTx.traceError "Not enough participants for draw"
 
     verifyPayouts :: PlutusTx.BuiltinByteString -> Bool
     {-# INLINEABLE verifyPayouts #-}
     -- TODO: implement winner/maintainer payouts before this validator is production-ready.
-    verifyPayouts _ = True
+    verifyPayouts seed = case selectWinners seed of
+      [_winner1, _winner2, _winner3] -> True
+      _ -> PlutusTx.traceError "Expected exactly three winners"
 
 {-# INLINEABLE lottoUntypedValidator #-}
 lottoUntypedValidator ::

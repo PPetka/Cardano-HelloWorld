@@ -291,16 +291,19 @@ Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
 public key in `LotteryParams`. The validator rebuilds the signed message from:
 
 - the literal message version `lotto-v1`;
+- the oracle slot label, such as `oracle-1`;
 - `ldRoundEndTime currentDatum`;
 - `ldPot currentDatum`;
 - the submitted oracle seed bytes.
 
-This binds each signature to the current lottery state. A seed signed for a
-different round end time or pot should not verify here.
+This binds each signature to its oracle slot and the current lottery state. A
+seed signed for a different oracle slot, round end time, or pot should not verify
+here.
 
-`combinedSeed` concatenates the three oracle seed byte strings in fixed oracle
-order and hashes them with `blake2b_256`. The fixed order makes the draw
-deterministic and auditable.
+`combinedSeed` tags the three oracle seed byte strings in fixed oracle order and
+hashes them with `blake2b_256`. The fixed order makes the draw deterministic and
+auditable, and the labels make the hash input depend on the oracle slot as well
+as the raw seed bytes.
 
 `drawTransitionValid` has two paths:
 
@@ -337,7 +340,9 @@ Winner selection is deterministic once the three oracle seeds pass signature
 verification.
 
 ```text
-oracle seed 1 <> oracle seed 2 <> oracle seed 3
+lotto-v1|combined|oracle-1: <> oracle seed 1
+  <> |oracle-2: <> oracle seed 2
+  <> |oracle-3: <> oracle seed 3
   -> blake2b_256
   -> combined draw seed
 ```

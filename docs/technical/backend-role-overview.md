@@ -258,11 +258,11 @@ The backend must be very careful here. The oracle must sign the exact bytes that
 the validator rebuilds:
 
 ```text
-lotto-v1 | current round end | current pot | oracle seed
+lotto-v1 | oracle slot | current round end | current pot | oracle seed
 ```
 
-If the backend sends the wrong pot, wrong round end time, wrong number encoding,
-wrong seed bytes, or wrong provider order, the signature check will fail and the
+If the backend sends the wrong oracle slot, pot, round end time, number
+encoding, seed bytes, or provider order, the signature check will fail and the
 draw transaction will be rejected.
 
 Provider order matters:

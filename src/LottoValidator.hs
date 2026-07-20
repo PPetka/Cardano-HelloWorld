@@ -8,6 +8,7 @@ import PlutusLedgerApi.V3 (Datum (..), Lovelace (..), OutputDatum (..),
                            ScriptInfo (..), TxInInfo (..), TxInfo (..), TxOut (..), from,
                            getRedeemer, to)
 import PlutusLedgerApi.V3.Contexts (findOwnInput, getContinuingOutputs)
+import PlutusLedgerApi.V1.Address (toPubKeyHash)
 import PlutusLedgerApi.V1.Interval (Interval (..), contains, strictUpperBound)
 import PlutusLedgerApi.V1.Value (lovelaceValueOf)
 import PlutusTx
@@ -21,6 +22,10 @@ data LotteryParams = LotteryParams
   -- ^ Maintainer's public key hash who receives the maintenance fee.
   , lpTicketPrice :: Lovelace
   -- ^ Price per lottery ticket in Lovelace (1 ADA = 1,000,000 Lovelace).
+  , lpMinCallerReward :: Lovelace
+  -- ^ Minimum reward paid from the pot to the wallet that submits a successful draw.
+  , lpMaxCallerReward :: Lovelace
+  -- ^ Maximum reward paid from the pot to the wallet that submits a successful draw.
   , lpOracle1PublicKey :: PlutusTx.BuiltinByteString
   -- ^ Raw Ed25519 public key for the first randomness oracle.
   , lpOracle2PublicKey :: PlutusTx.BuiltinByteString
@@ -36,7 +41,7 @@ PlutusTx.makeIsDataSchemaIndexed ''LotteryParams [('LotteryParams, 0)]
 
 {- | Datum represents the state of a daily lottery.
 It contains the current round end time, list of participants (PubKeyHashes),
-and the total Lovelace locked in the script UTXO.
+and the Lovelace prize pot tracked by the lottery.
 -}
 data LotteryDatum = LotteryDatum
   { ldRoundEndTime :: POSIXTime
@@ -44,7 +49,7 @@ data LotteryDatum = LotteryDatum
   , ldParticipants :: [PubKeyHash]
   -- ^ List of participants who bought tickets.
   , ldPot          :: Lovelace
-  -- ^ Total Lovelace locked in the lottery script UTXO.
+  -- ^ Prize pot in Lovelace. The script UTXO may hold extra ADA needed to keep the state UTXO alive.
   }
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
@@ -65,7 +70,7 @@ PlutusTx.makeIsDataSchemaIndexed ''OracleSeed [('OracleSeed, 0)]
 {- | Redeemer is the input that changes the state of a smart contract.
 In this case it is either a BuyTicket action or a Draw action.
 -}
-data LotteryRedeemer = BuyTicket PubKeyHash | Draw OracleSeed OracleSeed OracleSeed
+data LotteryRedeemer = BuyTicket PubKeyHash | Draw PubKeyHash OracleSeed OracleSeed OracleSeed
   deriving stock (Generic)
   deriving anyclass (HasBlueprintDefinition)
 
@@ -102,30 +107,35 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     conditions = case redeemer of
       BuyTicket buyer ->
         [ -- Tickets can only be bought before the draw window starts.
-          validBuyTime
+          PlutusTx.traceIfFalse "BuyTicket: too late" validBuyTime
         , -- Before trusting currentDatum.ldPot, compare it with the Lovelace being spent.
-          currentTxInputValueMatchesDatumPot
+          PlutusTx.traceIfFalse "BuyTicket: current input does not cover datum pot" currentTxInputValueCoversDatumPot
         , -- One wallet should not be able to buy twice in the same round.
-          PlutusTx.not (buyerInList buyer)
+          PlutusTx.traceIfFalse "BuyTicket: buyer already has ticket" (PlutusTx.not (buyerInList buyer))
         , -- The participant being added must approve the transaction.
           -- Without this, someone can add another wallet to the participant list.
-          buyerSigned buyer
-        , -- The next datum must increase the total script Lovelace by exactly one ticket.
-          nextDatumPotIncreasesByTicketPrice
-        , -- The next script txOutput must actually lock the next datum's Lovelace.
-          nextTxOutputHasExpectedPot
+          PlutusTx.traceIfFalse "BuyTicket: buyer did not sign" (buyerSigned buyer)
+        , -- The next datum must increase the prize pot by exactly one ticket.
+          PlutusTx.traceIfFalse "BuyTicket: next datum pot not increased by ticket price" nextDatumPotIncreasesByTicketPrice
+        , -- The next script txOutput must actually lock the previous script value plus this ticket.
+          PlutusTx.traceIfFalse "BuyTicket: next output value not increased by ticket price" nextTxOutputHasExpectedPot
         , -- The next datum must preserve round timing and add current buyer.
-          nextDatumAddsBuyer buyer
+          PlutusTx.traceIfFalse "BuyTicket: next datum does not add buyer correctly" (nextDatumAddsBuyer buyer)
         ]
-      Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
+      Draw caller oracleSeed1 oracleSeed2 oracleSeed3 ->
         [ -- Draw can only happen once the round has ended.
-          validDrawTime
+          PlutusTx.traceIfFalse "Draw: too early" validDrawTime
         , -- Before paying/resetting the round, confirm currentDatum.ldPot matches the spent UTXO.
-          currentTxInputValueMatchesDatumPot
+          PlutusTx.traceIfFalse "Draw: current input does not cover datum pot" currentTxInputValueCoversDatumPot
+        , -- The wallet claiming the caller reward must approve the draw transaction.
+          -- txInfoSignatories proves a key signed, but the redeemer says which signer is the caller.
+          PlutusTx.traceIfFalse "Draw: caller did not sign" (callerSigned caller)
+        , -- Reward bounds are script parameters, so reject misconfigured negative values.
+          PlutusTx.traceIfFalse "Draw: caller reward bounds invalid" callerRewardBoundsValid
         , -- Each oracle seed must be signed for this lottery version and current state.
-          oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3
+          PlutusTx.traceIfFalse "Draw: oracle seed signature invalid" (oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3)
         , -- With fewer than 3 participants, no payout happens; the round rolls over.
-          drawTransitionValid (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
+          PlutusTx.traceIfFalse "Draw: state transition or payouts invalid" (drawTransitionValid caller (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3))
         ]
 
     buyerInList :: PubKeyHash -> Bool
@@ -139,6 +149,19 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     buyerSigned buyer = case List.find (PlutusTx.== buyer) (txInfoSignatories txInfo) of
       Nothing -> False
       Just _  -> True
+
+    callerSigned :: PubKeyHash -> Bool
+    {-# INLINEABLE callerSigned #-}
+    callerSigned caller = case List.find (PlutusTx.== caller) (txInfoSignatories txInfo) of
+      Nothing -> False
+      Just _  -> True
+
+    callerRewardBoundsValid :: Bool
+    {-# INLINEABLE callerRewardBoundsValid #-}
+    callerRewardBoundsValid =
+      (lpMinCallerReward params PlutusTx.>= Lovelace 0)
+        PlutusTx.&& (lpMaxCallerReward params PlutusTx.>= Lovelace 0)
+        PlutusTx.&& (lpMaxCallerReward params PlutusTx.>= lpMinCallerReward params)
 
     currentRoundEndTime :: POSIXTime
     {-# INLINEABLE currentRoundEndTime #-}
@@ -182,11 +205,18 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     {-# INLINEABLE currentTxInputValue #-}
     currentTxInputValue = lovelaceValueOf (txOutValue currentTxInputResolvedTxOutput)
 
-    -- currentDatum.ldPot is our datum copy of the script's total Lovelace.
-    -- Check it against the real current txInput value before using it later.
-    currentTxInputValueMatchesDatumPot :: Bool
-    {-# INLINEABLE currentTxInputValueMatchesDatumPot #-}
-    currentTxInputValueMatchesDatumPot = currentTxInputValue PlutusTx.== ldPot currentDatum
+    -- currentDatum.ldPot is the prize pot. The actual script UTXO may contain
+    -- extra ADA so Cardano can keep the continuing output alive, so require the
+    -- real input value to cover the prize pot instead of equaling it exactly.
+    currentTxInputValueCoversDatumPot :: Bool
+    {-# INLINEABLE currentTxInputValueCoversDatumPot #-}
+    currentTxInputValueCoversDatumPot = currentTxInputValue PlutusTx.>= ldPot currentDatum
+
+    currentScriptReserveValue :: Lovelace
+    {-# INLINEABLE currentScriptReserveValue #-}
+    -- This is Lovelace at the script that is not part of the prize pot. It can
+    -- cover the minimum ADA needed for the next state UTxO after a successful draw.
+    currentScriptReserveValue = currentTxInputValue PlutusTx.- ldPot currentDatum
 
     nextDatumPotIncreasesByTicketPrice :: Bool
     {-# INLINEABLE nextDatumPotIncreasesByTicketPrice #-}
@@ -220,30 +250,33 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
     nextTxOutputStartsNewRound :: Bool
     {-# INLINEABLE nextTxOutputStartsNewRound #-}
     ~nextTxOutputStartsNewRound =
-      -- This only checks the next lottery state. Payout correctness belongs in verifyPayouts.
+      -- Successful draws reset the prize pot to zero. The continuing output may
+      -- still keep the non-prize script reserve so the next round has a state UTxO.
       let (txOutput, nextDatum) = nextTxOutputWithDatum
        in (ldRoundEndTime nextDatum PlutusTx.== addPOSIXTime currentRoundEndTime oneDay)
             PlutusTx.&& (ldParticipants nextDatum PlutusTx.== [])
-            PlutusTx.&& (ldPot nextDatum PlutusTx.== lovelaceValueOf (txOutValue txOutput))
+            PlutusTx.&& (ldPot nextDatum PlutusTx.== Lovelace 0)
+            PlutusTx.&& (lovelaceValueOf (txOutValue txOutput) PlutusTx.== currentScriptReserveValue)
 
     nextTxOutputRollsOverRound :: Bool
     {-# INLINEABLE nextTxOutputRollsOverRound #-}
     ~nextTxOutputRollsOverRound =
-      -- Not enough participants: keep participants/pot and advance the round end time.
+      -- Not enough participants: keep participants, prize pot, and script reserve,
+      -- then advance the round end time. No winner, maintainer, or caller payout happens.
       let (txOutput, nextDatum) = nextTxOutputWithDatum
        in (ldRoundEndTime nextDatum PlutusTx.== addPOSIXTime currentRoundEndTime oneDay)
             PlutusTx.&& (ldParticipants nextDatum PlutusTx.== ldParticipants currentDatum)
             PlutusTx.&& (ldPot nextDatum PlutusTx.== ldPot currentDatum)
-            PlutusTx.&& (ldPot nextDatum PlutusTx.== lovelaceValueOf (txOutValue txOutput))
+            PlutusTx.&& (lovelaceValueOf (txOutValue txOutput) PlutusTx.== currentTxInputValue)
 
-    drawTransitionValid :: PlutusTx.BuiltinByteString -> Bool
+    drawTransitionValid :: PubKeyHash -> PlutusTx.BuiltinByteString -> Bool
     {-# INLINEABLE drawTransitionValid #-}
-    drawTransitionValid seed =
+    drawTransitionValid caller seed =
       if enoughParticipants
         then
-          nextTxOutputStartsNewRound
-            PlutusTx.&& verifyPayouts seed
-        else nextTxOutputRollsOverRound
+          PlutusTx.traceIfFalse "Draw: next round output invalid" nextTxOutputStartsNewRound
+            PlutusTx.&& PlutusTx.traceIfFalse "Draw: payout outputs invalid" (verifyPayouts caller seed)
+        else PlutusTx.traceIfFalse "Draw: rollover output invalid" nextTxOutputRollsOverRound
 
     enoughParticipants :: Bool
     {-# INLINEABLE enoughParticipants #-}
@@ -354,11 +387,116 @@ lottoTypedValidator params ctx@(ScriptContext txInfo scriptRedeemer scriptInfo) 
             then [winner1, winner2, winner3]
             else PlutusTx.traceError "Not enough participants for draw"
 
-    verifyPayouts :: PlutusTx.BuiltinByteString -> Bool
+    percentOf :: Lovelace -> Integer -> Lovelace
+    {-# INLINEABLE percentOf #-}
+    percentOf (Lovelace amount) percent = Lovelace ((amount PlutusTx.* percent) `PlutusTx.quotient` 100)
+
+    minLovelace :: Lovelace -> Lovelace -> Lovelace
+    {-# INLINEABLE minLovelace #-}
+    minLovelace a b =
+      if a PlutusTx.<= b
+        then a
+        else b
+
+    maxLovelace :: Lovelace -> Lovelace -> Lovelace
+    {-# INLINEABLE maxLovelace #-}
+    maxLovelace a b =
+      if a PlutusTx.>= b
+        then a
+        else b
+
+    drawPayouts :: (Lovelace, Lovelace, Lovelace, Lovelace, Lovelace)
+    {-# INLINEABLE drawPayouts #-}
+    -- The prize pot first pays maintenance, then the caller reward. The caller
+    -- reward aims for at least lpMinCallerReward and at most lpMaxCallerReward,
+    -- but it is also capped by what remains after maintenance so the prize pool
+    -- cannot become negative. The remaining prize pool is split by rank; the final
+    -- winner receives the remainder so integer division dust is still paid out.
+    drawPayouts =
+      let currentPot = ldPot currentDatum
+          maintenanceFee = percentOf currentPot 4
+          availableAfterMaintenance = currentPot PlutusTx.- maintenanceFee
+          targetCallerReward = maxLovelace (percentOf currentPot 1) (lpMinCallerReward params)
+          cappedCallerReward = minLovelace targetCallerReward (lpMaxCallerReward params)
+          callerReward = minLovelace cappedCallerReward availableAfterMaintenance
+          prizePool = currentPot PlutusTx.- maintenanceFee PlutusTx.- callerReward
+          winner1Payout = percentOf prizePool 50
+          winner2Payout = percentOf prizePool 30
+          winner3Payout = prizePool PlutusTx.- winner1Payout PlutusTx.- winner2Payout
+       in (maintenanceFee, callerReward, winner1Payout, winner2Payout, winner3Payout)
+
+    -- Total Lovelace paid to one normal wallet address across all transaction outputs.
+    -- A Cardano transaction can pay the same wallet through more than one output,
+    -- so this helper adds all outputs for this public key hash.
+    totalLovelacePaidToPubKeyHash :: PubKeyHash -> Lovelace
+    {-# INLINEABLE totalLovelacePaidToPubKeyHash #-}
+    totalLovelacePaidToPubKeyHash pkh = sumLovelacePaidToPubKeyHashInOutputs pkh (txInfoOutputs txInfo)
+
+    sumLovelacePaidToPubKeyHashInOutputs :: PubKeyHash -> [TxOut] -> Lovelace
+    {-# INLINEABLE sumLovelacePaidToPubKeyHashInOutputs #-}
+    -- Walk the output list directly instead of building a filtered list first. This is
+    -- cheaper on-chain and keeps the check easy to follow: empty list means zero paid;
+    -- otherwise check the first output and continue with the rest.
+    sumLovelacePaidToPubKeyHashInOutputs pkh txOutputs = case txOutputs of
+      [] -> Lovelace 0
+      txOutput : rest ->
+        let restPaid = sumLovelacePaidToPubKeyHashInOutputs pkh rest
+         in if toPubKeyHash (txOutAddress txOutput) PlutusTx.== Just pkh
+              -- toPubKeyHash recognizes normal public-key outputs. Script outputs do
+              -- not count as winner/caller/maintainer payments in this simple payout rule.
+              then lovelaceValueOf (txOutValue txOutput) PlutusTx.+ restPaid
+              else restPaid
+
+    payoutForPubKeyHash :: PubKeyHash -> PubKeyHash -> PubKeyHash -> PubKeyHash -> PubKeyHash -> Lovelace
+    {-# INLINEABLE payoutForPubKeyHash #-}
+    -- Calculate how much one wallet must receive in this draw. The same wallet can
+    -- have more than one role, for example caller and winner, so this sums every
+    -- matching role instead of checking each role against a separate output.
+    payoutForPubKeyHash pkh caller winner1 winner2 winner3 =
+      let (maintenanceFee, callerReward, winner1Payout, winner2Payout, winner3Payout) = drawPayouts
+          -- The configured maintainer receives the 4% maintenance fee.
+          maintainerPayout =
+            if pkh PlutusTx.== lpMaintainer params
+              then maintenanceFee
+              else Lovelace 0
+          -- The caller receives the capped draw reward only when this pkh is the
+          -- caller named in the redeemer and already checked against txInfoSignatories.
+          callerPayout =
+            if pkh PlutusTx.== caller
+              then callerReward
+              else Lovelace 0
+          -- Winner payouts are rank-based. selectWinners removes winners as it goes,
+          -- so winner1, winner2, and winner3 are different participant public keys.
+          firstPayout =
+            if pkh PlutusTx.== winner1
+              then winner1Payout
+              else Lovelace 0
+          secondPayout =
+            if pkh PlutusTx.== winner2
+              then winner2Payout
+              else Lovelace 0
+          thirdPayout =
+            if pkh PlutusTx.== winner3
+              then winner3Payout
+              else Lovelace 0
+       in maintainerPayout PlutusTx.+ callerPayout PlutusTx.+ firstPayout PlutusTx.+ secondPayout PlutusTx.+ thirdPayout
+
+    pubKeyHashReceivesExpectedPayout :: PubKeyHash -> PubKeyHash -> PubKeyHash -> PubKeyHash -> PubKeyHash -> Bool
+    {-# INLINEABLE pubKeyHashReceivesExpectedPayout #-}
+    pubKeyHashReceivesExpectedPayout pkh caller winner1 winner2 winner3 =
+      totalLovelacePaidToPubKeyHash pkh PlutusTx.>= payoutForPubKeyHash pkh caller winner1 winner2 winner3
+
+    verifyPayouts :: PubKeyHash -> PlutusTx.BuiltinByteString -> Bool
     {-# INLINEABLE verifyPayouts #-}
-    -- TODO: implement winner/maintainer payouts before this validator is production-ready.
-    verifyPayouts seed = case selectWinners seed of
-      [_winner1, _winner2, _winner3] -> True
+    -- A successful draw pays the maintainer, the signed caller, and all three ranked winners.
+    -- The checks aggregate by public key hash so overlapping roles require the combined amount.
+    verifyPayouts caller seed = case selectWinners seed of
+      [winner1, winner2, winner3] ->
+        pubKeyHashReceivesExpectedPayout (lpMaintainer params) caller winner1 winner2 winner3
+          PlutusTx.&& pubKeyHashReceivesExpectedPayout caller caller winner1 winner2 winner3
+          PlutusTx.&& pubKeyHashReceivesExpectedPayout winner1 caller winner1 winner2 winner3
+          PlutusTx.&& pubKeyHashReceivesExpectedPayout winner2 caller winner1 winner2 winner3
+          PlutusTx.&& pubKeyHashReceivesExpectedPayout winner3 caller winner1 winner2 winner3
       _ -> PlutusTx.traceError "Expected exactly three winners"
 
 {-# INLINEABLE lottoUntypedValidator #-}

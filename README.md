@@ -1,94 +1,46 @@
-# Plinth Template Repository 
+# Cardano Lotto Hello World
 
-A template repository for your Plinth smart contract project.
+This is a small first Cardano/Plinth smart-contract project.
 
-Plinth currently supports GHC `v9.6.x`. Cabal `v3.8+` is recommended.
+It is based on the Plinth template project, so the development setup starts
+from a known working structure instead of requiring you to assemble the tooling
+from scratch.
 
-### 1. Create the repository
+It is not meant to be a perfect or production-ready lottery. It is a playful
+"hello world" for learning how the Cardano smart-contract world fits together:
+the project structure, validator code, local environment, checks, generated
+artifacts, and the general path from idea to something deployable.
 
-- From the command line:
+The contract is a simple decentralized lotto: users buy tickets, the pot grows,
+and a draw later selects winners using external randomness.
 
-  ```
-  gh repo create my-project --private --template IntersectMBO/plinth-template
-  ```
+The point is to learn by touching the whole shape of a real application without
+pretending it is already a serious protocol. A lottery is small enough to reason
+about, but still exposes useful Cardano questions: where state lives, who is
+allowed to change it, how money is checked, and how off-chain code must prepare
+transactions that the on-chain validator will accept.
 
-- Or from the [GitHub web page](https://github.com/IntersectMBO/plinth-template), click the top-right green button:
+It is also a good way to notice smart-contract limits. A validator can check
+rules, signatures, values, deadlines, and transaction structure. It cannot run a
+website, call the internet, privately generate randomness, or fix a vague
+business rule. Those parts have to be designed around the contract.
 
-  `Use this template -> Create new repository`
+Read the docs by depth:
 
-- Or just fork/clone `plinth-template` (but note that this is a template repository)
+Intro-level docs:
 
-  More information on GitHub template repositories can be found [here](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+1. [Business overview](docs/overview/business-overview.md) explains the lottery idea, the actors, and the business rules without requiring Cardano or Plutus knowledge.
+2. [Product overview](docs/overview/product-overview.md) describes the user-facing application flow and what the product needs to make the protocol usable.
 
-### 2. Setup your development environment
+More detailed architecture:
 
-<details>
-  <summary> With Nix (<b>recommended</b>) </summary>
+1. [Protocol architecture](docs/technical/protocol-architecture.md) explains how the lottery state, tickets, draw lifecycle, funds, and transaction responsibilities fit together across the system.
 
-  1. Follow [these instructions](https://github.com/input-output-hk/iogx/blob/main/doc/nix-setup-guide.md) to install and configure nix, <b>even if you already have it installed</b>.
-     
-  2. Then enter the shell using `nix develop`.
+Very technical docs:
 
-  > NOTE:  
-  > The nix files inside this template follow the [`iogx` template](https://github.com/input-output-hk/iogx), but you can delete and replace them with your own. In that case, you might want to include the [`devx` flake](https://github.com/input-output-hk/devx/issues) in your flake inputs as a starting point to supply all the necessary dependencies, making sure to use one of the `-iog` flavors.
+1. [Plutus architecture](docs/technical/plutus-architecutre.md) explains the on-chain validator shape, datum/redeemer/context handling, and how Plinth code enforces the protocol rules.
+2. [Randomness/oracle architecture](docs/oracle/randomness-architecture.md) explains why randomness must come from outside the validator and how oracle data is expected to enter the draw process.
+3. [Backend role overview](docs/technical/backend-role-overview.md) explains what the off-chain backend prepares, watches, and submits so users can interact with the on-chain contract safely.
 
-  > NOTE (for Windows users):<br>
-  > Make sure to have [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install#upgrade-version-from-wsl-1-to-wsl-2) and the [WSL](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) VSCode extension (if using VSCode) installed before the Nix setup.
-</details>
-
-<details>
-  <summary> With Docker / Devcontainer / Codespaces </summary>
-  
-  - **Docker + Codespaces:** From the [GitHub web page](https://github.com/IntersectMBO/plinth-template), click the top-right green button:
-
-    `Use this template -> Open in a codespace`
-
-  - **Docker + Devcontainer:**
-    1. Make sure to have [VSCode](https://code.visualstudio.com/) installed with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension.
-    2. Open this project in VSCode and let it create a local codespace for you (See Dev Containers instructions, if needed).
-
-  - **Stand-alone Docker:** Change the `/path/to/my-project` accordingly and run:
-
-  ```
-    docker run \
-      -v /path/to/my-project:/workspaces/my-project \
-      -it ghcr.io/input-output-hk/devx-devcontainer:x86_64-linux.ghc96-iog
-  ```
-
-  > NOTE:
-  > You can modify your [`devcontainer.json`](./.devcontainer/devcontainer.json) file to customize the container (more info [here](https://github.com/input-output-hk/devx?tab=readme-ov-file#vscode-devcontainer--github-codespace-support)).
-
-  > NOTE:  
-  > When using this approach, you can ignore/delete/replace the Nix files entirely.
-
-  > NOTE (for Windows users):<br>
-  > It is recommended to install and run Docker on your native OS. If you want to run Docker Desktop inside a VM, read through [these notes](https://docs.docker.com/desktop/setup/vm-vdi/).
-</details>
-
-<details>
-  <summary> With Demeter </summary>
-  
-  1. Create an account in [Demeter](https://demeter.run/).
-  
-  2. Follow [their instructions](https://docs.demeter.run/guides/getting-started) to setup a remote development environment.
-
-  > IMPORTANT:  
-  > Demeter uses its own infrastructure and packages. If something is not working correctly, please contact them before creating an issue.
-
-  > NOTE:  
-  > When using this approach, you can ignore/delete/replace the Nix files entirely.
-</details>
-
-<details>
-  <summary> With manually-installed dependencies (<b>not recommended</b>) </summary>
-  <br>
-  
-  Follow the instructions for [cardano-node](https://developers.cardano.org/docs/get-started/cardano-node/installing-cardano-node/) for a custom setup.
-
-  > NOTE:  
-  > When using this approach, you can ignore/delete/replace the Nix files entirely.
-</details>
-
-### 3. Run the example application
-
-Run `cabal update` first, then read [Example: An Auction Smart Contract](https://plutus.cardano.intersectmbo.org/docs/category/example-an-auction-smart-contract) to get started.
+Use this as a small warm-up before building a larger, more mature Cardano
+application.

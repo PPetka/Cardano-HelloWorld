@@ -7,7 +7,7 @@ Related documents:
 - `docs/overview/business-overview.md`
 - `docs/overview/product-overview.md`
 - `docs/technical/plutus-architecutre.md`
-- `docs/oracle/oracle-architecture-v1.md`
+- `docs/oracle/randomness-architecture.md`
 
 ## Purpose
 
@@ -185,7 +185,7 @@ For this protocol, randomness is handled one layer above the validator:
 6. Winner positions are derived from that draw seed.
 
 The detailed byte format and signature rules are specified in
-`docs/oracle/oracle-architecture-v1.md`.
+`docs/oracle/randomness-architecture.md`.
 
 Protocol requirement:
 

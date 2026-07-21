@@ -25,6 +25,10 @@ rules, signatures, values, deadlines, and transaction structure. It cannot run a
 website, call the internet, privately generate randomness, or fix a vague
 business rule. Those parts have to be designed around the contract.
 
+The main on-chain lotto code lives in [src/LottoValidator.hs](src/LottoValidator.hs).
+For the local test setup and how to add new validator tests, read the
+[smart contract testing guide](docs/test/testing-guide.md).
+
 Read the docs by depth:
 
 Intro-level docs:

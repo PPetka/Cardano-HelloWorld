@@ -51,8 +51,8 @@ transitions public and enforceable.
   rules.
 - **Randomness providers** contribute signed randomness for the draw.
 - **The backend** builds transactions and gives users a normal app experience.
-- **The maintainer** operates and improves the system, and is intended to receive
-  a maintenance fee once payout rules are finished.
+- **The maintainer** operates and improves the system, and receives the
+  maintenance fee on successful draws.
 
 The backend can prepare actions, but it cannot make the contract accept an action
 that breaks the validator's rules.
@@ -77,7 +77,7 @@ The current validator is designed to enforce these rules:
 - tickets can only be bought before the round end time;
 - one wallet can buy at most one ticket per round;
 - the buyer must approve their own ticket transaction;
-- the recorded prize pool must match the funds controlled by the lottery;
+- the funds controlled by the lottery must cover the recorded prize pool;
 - each ticket must increase the prize pool by the configured ticket price;
 - draw transactions can only happen after the round end time;
 - draw randomness must come from the configured randomness providers.
@@ -126,22 +126,19 @@ A technically curious user or auditor should be able to verify:
 - whether a draw happened after the deadline;
 - whether the draw used inputs from the expected randomness providers.
 
-Once payout verification is implemented, they should also be able to verify that
-the selected winners and maintainer were paid according to the published prize
-rules.
+They should also be able to verify that the selected winners, maintainer, and
+draw caller were paid according to the published prize rules.
 
 ## What Is Not Finished Yet
 
 The current implementation is not production-ready.
 
-The largest missing piece is payout verification. The validator can select
-winners, but it does not yet enforce that the transaction pays those winners or
-the maintainer correctly.
+Payout verification is implemented for successful draws. The validator checks
+that the transaction pays the maintainer, signed draw caller, and three winners
+at least the required amounts.
 
 Other important gaps:
 
-- the prize split still needs to be defined;
-- the maintenance fee still needs final rules;
 - tests for bad randomness inputs and unauthorized actions still need to be
   added;
 - the participant list can grow, which may become expensive;
@@ -163,7 +160,7 @@ Its current strengths are:
 
 Its current limitations are also important to present clearly:
 
-- payout enforcement is unfinished;
+- payout tests and budget measurements are not finished;
 - scalability of the participant list is not solved;
 - randomness and transaction-submission fairness need more work;
 - production deployment needs tests, artifacts, and budget measurements.
@@ -179,7 +176,7 @@ For a demo, describe it like this:
 4. "After the deadline, independent sources provide signed randomness for the
    draw."
 5. "The contract checks those inputs before selecting winners."
-6. "The next production milestone is enforcing the actual payout outputs."
+6. "The contract checks that the draw transaction pays the expected recipients."
 
 That framing is honest: it explains what is already valuable, while making the
 unfinished economic safety work impossible to miss.

@@ -32,12 +32,18 @@ Each round has three pieces of state:
   A wallet can appear at most once in this list during a round.
 
 - **Pot**: the Lovelace prize pool controlled by the lottery.
-  The recorded pot must match the actual funds locked at the lottery contract.
+  The recorded pot must be covered by the funds locked at the lottery contract.
+  The script UTxO may carry extra ADA that is not part of the prize pot, for
+  example ADA needed to keep the next state UTxO alive after a draw.
 
 Each validator instance also has fixed configuration:
 
 - **Maintainer**: the wallet intended to receive the maintenance fee.
-  This matters once payout enforcement is implemented.
+  It receives 4% of the prize pot on a successful draw.
+
+- **Caller reward bounds**: the minimum and maximum reward for the wallet that
+  submits a successful draw. The current test target is a 1 ADA minimum and a
+  configurable maximum such as 5 ADA.
 
 - **Ticket price**: the exact price of one ticket.
   Every valid ticket must increase the pot by exactly this amount.
@@ -90,7 +96,7 @@ Validation rules:
   This prevents late ticket purchases after the draw window starts.
 
 - **Pot integrity**
-  The current recorded pot must match the current locked funds.
+  The current locked funds must cover the current recorded prize pot.
   This prevents the rest of the protocol from trusting a false pot number.
 
 - **No duplicate ticket**
@@ -138,9 +144,10 @@ Required information:
 - current participants;
 - current recorded pot;
 - current funds controlled by the lottery;
+- caller public key hash;
 - three signed randomness inputs, one from each configured provider;
 - proposed next lottery state;
-- payout outputs, once payout enforcement is implemented.
+- payout outputs for the maintainer, caller, and three winners.
 
 Validation rules:
 
@@ -149,8 +156,13 @@ Validation rules:
   This prevents drawing before ticket buying closes.
 
 - **Pot integrity**
-  The current recorded pot must match the current locked funds.
+  The current locked funds must cover the current recorded prize pot.
   This prevents payout logic from trusting a false pot number.
+
+- **Caller authorization**
+  The caller named in the redeemer must sign the transaction.
+  This prevents the validator from guessing which signer should receive the
+  caller reward.
 
 - **Randomness authorization**
   Each randomness input must be signed by its configured provider.
@@ -221,11 +233,12 @@ same winners.
 When the round has enough participants for a normal draw, the protocol should:
 
 - select three distinct winners from the current participant list;
-- verify that winner and maintainer payments match the published payout rule;
+- verify that winner, maintainer, and caller payments meet the published payout
+  rule;
 - create the next lottery state for a fresh round;
 - move the round end time forward by one day;
 - start the next participant list empty;
-- set the next recorded pot to match the funds locked for the next round.
+- reset the next recorded prize pot to zero.
 
 Current implementation status:
 
@@ -274,20 +287,14 @@ For drawing, the backend must:
 - make sure those inputs are signed for this exact lottery state;
 - include the signed inputs in the configured provider order;
 - build either the new-round state or the rollover state;
-- include winner and maintainer payments once payout enforcement is implemented;
+- include maintainer, caller, and winner payment outputs for successful draws;
 - set the transaction time range at or after the round end.
 
 ## Current Production Gaps
 
-- **Payout verification is incomplete**
-  Winners can be selected, but payments are not yet enforced by the validator.
-
-- **Prize split is not finalized**
-  The protocol needs exact percentages or amounts before payout checks can be
-  implemented.
-
-- **Maintainer fee is not finalized**
-  The validator needs an exact fee rule before it can enforce maintainer payment.
+- **Tests are incomplete**
+  The payout rule is implemented, but missing/underpaid-output tests are still
+  needed before this should be trusted.
 
 - **Participant list is unbounded**
   Very large rounds may become expensive or impractical.
@@ -307,8 +314,8 @@ For drawing, the backend must:
 
 Likely next improvements:
 
-- define the exact prize split and maintainer fee;
-- implement payout verification against transaction outputs;
+- add a fee-aware caller reward rule if testing shows the fixed minimum is not
+  enough for reliable draw submission;
 - test unauthorized buyer actions;
 - test duplicate ticket attempts;
 - test buy and draw time boundaries;

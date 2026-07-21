@@ -22,6 +22,7 @@ With three independent seeds, the final value depends on all three inputs. **As 
 Each oracle signs a message that contains:
 
 - the message version, `lotto-v1`;
+- the oracle slot, such as `oracle-1`;
 - the current round end time from the datum;
 - the current pot from the datum;
 - that oracle's seed.
@@ -34,7 +35,7 @@ This is an introductory oracle-randomness design, not a complete production rand
 
 The goal of v1 is simple and auditable:
 
-- each seed is bound to the current on-chain datum state;
+- each seed is bound to its oracle slot and the current on-chain datum state;
 - one oracle alone cannot choose the final draw seed;
 - the validator can verify signatures fully on-chain;
 - the backend has a concrete byte-level message format to implement and test.
@@ -44,7 +45,7 @@ The goal of v1 is simple and auditable:
 1. A round is open until `ldRoundEndTime`.
 2. Users buy tickets before `ldRoundEndTime`.
 3. At or after `ldRoundEndTime`, the backend asks three oracle services for seeds.
-4. Each oracle signs the exact message bytes for the current lottery state and its own seed.
+4. Each oracle signs the exact message bytes for its oracle slot, the current lottery state, and its own seed.
 5. The draw transaction submits:
    - `OracleSeed seed1 signature1`
    - `OracleSeed seed2 signature2`
@@ -113,9 +114,10 @@ There is no `ldRoundId`. The signed randomness message is instead bound to exist
 
 - `ldRoundEndTime`
 - `ldPot`
+- oracle slot
 - oracle-provided seed
 
-This means the backend must construct the exact same signing message bytes as the validator. It does not mean the backend must construct the datum differently. The datum is still the normal lottery state carried by the script UTXO. The extra responsibility is specifically in the draw/oracle path: when the backend asks an oracle to sign a seed, it must encode `ldRoundEndTime`, `ldPot`, and the seed exactly the same way `oracleMessage` does on-chain.
+This means the backend must construct the exact same signing message bytes as the validator. It does not mean the backend must construct the datum differently. The datum is still the normal lottery state carried by the script UTXO. The extra responsibility is specifically in the draw/oracle path: when the backend asks an oracle to sign a seed, it must encode the oracle slot, `ldRoundEndTime`, `ldPot`, and the seed exactly the same way `oracleMessage` does on-chain.
 
 This is why the byte-level example exists in this document. If the backend signs different bytes from the bytes rebuilt by the validator, the signature will not verify.
 
@@ -135,7 +137,7 @@ data OracleSeed = OracleSeed
 `osSignature` is the oracle's Ed25519 signature over the full oracle message:
 
 ```text
-lotto-v1 | current datum round end | current datum pot | this oracle seed
+lotto-v1 | oracle slot | current datum round end | current datum pot | this oracle seed
 ```
 
 When the validator runs `verifyEd25519Signature`, it rebuilds that message from the current on-chain datum and the submitted `osSeed`. If the signature verifies, the validator learns several things at once:
@@ -143,6 +145,7 @@ When the validator runs `verifyEd25519Signature`, it rebuilds that message from 
 - the seed came from the holder of the configured oracle private key;
 - the oracle signed this exact seed, not some other seed;
 - the oracle signed for this lottery message version, `lotto-v1`;
+- the oracle signed for its expected oracle slot;
 - the oracle signed for the current datum's `ldRoundEndTime`;
 - the oracle signed for the current datum's `ldPot`.
 
@@ -167,20 +170,23 @@ The position matters. Oracle 1 is checked against `lpOracle1PublicKey`, oracle 2
 The validator builds the message inside:
 
 ```haskell
-oracleMessage :: BuiltinByteString -> BuiltinByteString
+oracleMessage :: BuiltinByteString -> BuiltinByteString -> BuiltinByteString
 ```
 
 This is the most important backend rule in v1: the oracle signs the exact message bytes built by `oracleMessage`, not only the seed.
 
-`oracleMessage` takes one input: the oracle seed bytes. The other two values come from the current datum already locked at the script UTxO:
+`oracleMessage` takes two inputs: the oracle slot label and the oracle seed bytes. The other two values come from the current datum already locked at the script UTxO:
 
+- `oracleName`, the fixed oracle slot label such as `oracle-1`;
 - `ldRoundEndTime`, the current round end time;
 - `ldPot`, the current pot recorded by the lottery state.
 
 So each oracle signs a message shaped like this:
 
 ```text
-"lotto-v1|round-end:"
+"lotto-v1|oracle:"
+<> oracle slot bytes
+<> "|round-end:"
 <> big-endian base-256 bytes of current ldRoundEndTime
 <> "|pot:"
 <> big-endian base-256 bytes of current ldPot
@@ -197,6 +203,7 @@ Input values:
 ```text
 roundEnd = POSIXTime 1725235200000
 pot      = Lovelace 10000000
+oracle   = "oracle-1"
 seed     = "oracle-1-seed"
 ```
 
@@ -210,19 +217,19 @@ Number encoding:
 The exact message bytes, shown with escapes, are:
 
 ```text
-lotto-v1|round-end:\x01\x91\xb0\x08\x00\x00|pot:\x98\x96\x80|seed:oracle-1-seed
+lotto-v1|oracle:oracle-1|round-end:\x01\x91\xb0\x08\x00\x00|pot:\x98\x96\x80|seed:oracle-1-seed
 ```
 
 Those exact bytes, shown as hex, are:
 
 ```text
-6c6f74746f2d76317c726f756e642d656e643a0191b00800007c706f743a9896807c736565643a6f7261636c652d312d73656564
+6c6f74746f2d76317c6f7261636c653a6f7261636c652d317c726f756e642d656e643a0191b00800007c706f743a9896807c736565643a6f7261636c652d312d73656564
 ```
 
 The same message as byte values:
 
 ```text
-[108,111,116,116,111,45,118,49,124,114,111,117,110,100,45,101,110,100,58,1,145,176,8,0,0,124,112,111,116,58,152,150,128,124,115,101,101,100,58,111,114,97,99,108,101,45,49,45,115,101,101,100]
+[108,111,116,116,111,45,118,49,124,111,114,97,99,108,101,58,111,114,97,99,108,101,45,49,124,114,111,117,110,100,45,101,110,100,58,1,145,176,8,0,0,124,112,111,116,58,152,150,128,124,115,101,101,100,58,111,114,97,99,108,101,45,49,45,115,101,101,100]
 ```
 
 All three blocks above are the same message shown in different forms. For signing, the backend/oracle must use the bytes. The hex form is the safest copyable test value.
@@ -231,10 +238,10 @@ The escaped form is useful only if the backend language treats it as a real byte
 
 ```text
 escaped byte literal:
-lotto-v1|round-end:\x01\x91\xb0\x08\x00\x00|pot:\x98\x96\x80|seed:oracle-1-seed
+lotto-v1|oracle:oracle-1|round-end:\x01\x91\xb0\x08\x00\x00|pot:\x98\x96\x80|seed:oracle-1-seed
 
 to hex:
-6c6f74746f2d76317c726f756e642d656e643a0191b00800007c706f743a9896807c736565643a6f7261636c652d312d73656564
+6c6f74746f2d76317c6f7261636c653a6f7261636c652d317c726f756e642d656e643a0191b00800007c706f743a9896807c736565643a6f7261636c652d312d73656564
 ```
 
 Read that as a byte-literal example, not as a rule for every programming language. Different languages handle string escapes differently. Backend tests should compare the produced message bytes to the hex value above.
@@ -254,7 +261,7 @@ my_context_string_in_bytes <> random_seed_bytes_from_oracle
 This lets the validator verify two things at the same time:
 
 - the seed came from the oracle that owns the matching private key;
-- the seed was meant for this exact lottery state, not for a different round or pot.
+- the seed was meant for this exact oracle slot and lottery state, not for a different oracle, round, or pot.
 
 The oracle can create the seed itself and return both values to the backend:
 
@@ -263,35 +270,74 @@ seed
 signature over the full signed randomness message
 ```
 
-The backend includes both values in the draw redeemer. The validator rebuilds the same message from the current datum and the submitted seed, then checks the signature with the oracle's public key.
+The backend includes both values in the draw redeemer. The validator rebuilds the same message from the oracle slot, current datum, and submitted seed, then checks the signature with the oracle's public key.
 
 The labels are important. They separate the binary integer fields from each other and from the seed. Without labels or lengths, raw concatenation can be ambiguous.
+
+### Domain Separation and Deterministic Random Expansion
+
+This design uses a technique commonly called **domain separation**. The idea is
+to put an explicit label, prefix, or context string into the bytes before hashing
+or signing them. Here, labels such as `lotto-v1`, `oracle:`, `round-end:`, `pot:`, and
+`seed:` tell both the backend and the validator what each part of the byte string
+means.
+
+That matters because hashes and signatures only see bytes. They do not know that
+one byte sequence is supposed to be a round end time and another byte sequence is
+supposed to be a seed. Domain labels make accidental overlap much less likely:
+a seed signed for `lotto-v1|oracle:oracle-1|round-end:...|pot:...|seed:...` is not just a free
+floating random value that can be reused in some unrelated protocol or message
+shape.
+
+The winner-selection step uses the related technique of **deterministic random
+expansion**. After the three oracle seeds are combined into one `combinedSeed`,
+the validator derives separate random-looking values by hashing the combined
+seed with different labels:
+
+```haskell
+seed1 = blake2b_256 (combinedSeed <> "1")
+seed2 = blake2b_256 (combinedSeed <> "2")
+seed3 = blake2b_256 (combinedSeed <> "3")
+```
+
+This does not create new independent randomness from nowhere. Instead, it
+expands one accepted random input into several deterministic outputs that every
+validator can recompute exactly. The labels `"1"`, `"2"`, and `"3"` separate the
+uses: winner slot 1, winner slot 2, and winner slot 3 each get a different hash
+input, so they do not all read the same bytes from `combinedSeed`.
+
+In this lottery, domain separation is used for message meaning and replay
+resistance, while deterministic random expansion is used to turn one combined
+draw seed into multiple winner-selection inputs. Both techniques fit Cardano
+validators because they are deterministic: the backend can build the bytes, and
+the on-chain code can rebuild the same bytes and check the result.
 
 ## Signature Verification
 
 The validator checks each oracle independently:
 
 ```haskell
-oracleSeedSigned publicKey oracleSeed =
+oracleSeedSigned oracleName publicKey oracleSeed =
   verifyEd25519Signature
     publicKey
-    (oracleMessage (osSeed oracleSeed))
+    (oracleMessage oracleName (osSeed oracleSeed))
     (osSignature oracleSeed)
 ```
 
 Breakdown:
 
+- `oracleName` is the configured oracle slot label, such as `oracle-1`.
 - `publicKey` is the configured public key for one oracle. For oracle 1, this is `lpOracle1PublicKey params`.
 - `oracleSeed` is the redeemer value submitted for that oracle. It contains both `osSeed` and `osSignature`.
 - `osSeed oracleSeed` extracts the raw seed bytes from the redeemer.
-- `oracleMessage (osSeed oracleSeed)` rebuilds the exact bytes the oracle was supposed to sign, using the current datum plus that seed.
+- `oracleMessage oracleName (osSeed oracleSeed)` rebuilds the exact bytes the oracle was supposed to sign, using the oracle slot, current datum, and that seed.
 - `osSignature oracleSeed` extracts the submitted signature bytes.
 - `verifyEd25519Signature publicKey message signature` returns `True` only if the signature was created by the private key matching `publicKey` for exactly `message`.
 
 Algorithm key points:
 
 1. Take the submitted seed.
-2. Rebuild the expected message from current datum state and that seed.
+2. Rebuild the expected message from oracle slot, current datum state, and that seed.
 3. Take the submitted signature.
 4. Check the signature against the expected oracle public key.
 5. Accept this oracle's seed only if the check returns `True`.
@@ -302,16 +348,16 @@ Then it combines all three checks:
 
 ```haskell
 oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3 =
-  oracleSeedSigned (lpOracle1PublicKey params) oracleSeed1
-    && oracleSeedSigned (lpOracle2PublicKey params) oracleSeed2
-    && oracleSeedSigned (lpOracle3PublicKey params) oracleSeed3
+  oracleSeedSigned "oracle-1" (lpOracle1PublicKey params) oracleSeed1
+    && oracleSeedSigned "oracle-2" (lpOracle2PublicKey params) oracleSeed2
+    && oracleSeedSigned "oracle-3" (lpOracle3PublicKey params) oracleSeed3
 ```
 
 Breakdown:
 
-- `oracleSeed1` must verify against `lpOracle1PublicKey params`.
-- `oracleSeed2` must verify against `lpOracle2PublicKey params`.
-- `oracleSeed3` must verify against `lpOracle3PublicKey params`.
+- `oracleSeed1` must verify against `lpOracle1PublicKey params` and the `oracle-1` slot label.
+- `oracleSeed2` must verify against `lpOracle2PublicKey params` and the `oracle-2` slot label.
+- `oracleSeed3` must verify against `lpOracle3PublicKey params` and the `oracle-3` slot label.
 - `&&` means all checks must be true. If any oracle signature is missing, malformed, signed by the wrong key, or signed for different message bytes, the draw branch fails.
 
 Algorithm key points:
@@ -321,7 +367,7 @@ Algorithm key points:
 3. Verify oracle 3's seed with oracle 3's public key.
 4. Continue only if all three checks pass.
 
-This gives a clear authorization rule: the draw can only use seeds signed by the configured oracle keys. It also preserves oracle identity. The transaction builder cannot swap oracle 1 and oracle 2 unless the signatures still match the exact public keys expected by the validator.
+This gives a clear authorization rule: the draw can only use seeds signed by the configured oracle keys for their configured oracle slots. It also preserves oracle identity. The transaction builder cannot swap oracle 1 and oracle 2 unless the signatures still match both the exact public keys and slot labels expected by the validator.
 
 Known limitation for this intro contract: the design assumes each configured
 oracle actually provides a seed and signature when the draw is due. It does not
@@ -337,7 +383,14 @@ Each oracle contributes one seed. The validator combines the three seeds:
 
 ```haskell
 combinedSeed =
-  blake2b_256 (seed1 <> seed2 <> seed3)
+  blake2b_256
+    ( "lotto-v1|combined|oracle-1:"
+        <> seed1
+        <> "|oracle-2:"
+        <> seed2
+        <> "|oracle-3:"
+        <> seed3
+    )
 ```
 
 This is better than trusting a single backend seed because no single oracle directly controls the final input. A party that controls the only seed could search for a seed that makes its own ticket win, then submit a draw transaction that passes validation and drains the pot through the "winner" payout path. If at least one oracle supplies unpredictable seed bytes and does not collude with the transaction builder, the combined seed should remain unpredictable before that honest oracle reveals its seed.
@@ -395,20 +448,23 @@ This avoids awkward partial-prize logic and keeps user funds in the next round.
 The draw branch currently checks:
 
 ```haskell
-Draw oracleSeed1 oracleSeed2 oracleSeed3 ->
+Draw caller oracleSeed1 oracleSeed2 oracleSeed3 ->
   [ validDrawTime
-  , currentTxInputValueMatchesDatumPot
+  , currentTxInputValueCoversDatumPot
+  , callerSigned caller
+  , callerRewardBoundsValid
   , oracleSeedsSigned oracleSeed1 oracleSeed2 oracleSeed3
-  , drawTransitionValid (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
+  , drawTransitionValid caller (combinedSeed oracleSeed1 oracleSeed2 oracleSeed3)
   ]
 ```
 
 The order is readable:
 
 1. Check that this is actually draw time.
-2. Check that the current datum honestly describes the current script UTxO value.
-3. Check oracle authorization.
-4. Check the state transition: payout path or rollover path.
+2. Check that the current script UTxO covers the recorded prize pot.
+3. Check that the explicit caller signed the transaction.
+4. Check oracle authorization.
+5. Check the state transition: payout path or rollover path.
 
 The list is later consumed with `List.and`, so cost-sensitive versions may need direct `&&` structure if short-circuiting and evaluation order become important.
 
@@ -421,18 +477,19 @@ The backend must:
 3. Ask each oracle for a seed and signature, or run three independent oracle services.
 4. Construct the exact message bytes for each seed.
 5. Verify signatures off-chain before building the transaction.
-6. Build the `Draw` redeemer with three `OracleSeed` values.
+6. Build the `Draw` redeemer with the caller public key hash and three
+   `OracleSeed` values.
 7. Build the continuing output:
    - new round state if there are at least three participants;
    - rollover state if there are fewer than three participants.
-8. Build payout outputs once `verifyPayouts` is implemented.
+8. Build payout outputs for the maintainer, caller, and three winners when
+   there are at least three participants.
 
 ## Current Production Gaps
 
 The following are intentionally not complete in v1:
 
-- `verifyPayouts` does not yet verify actual payment outputs.
-- `calculateFees` is placeholder logic and currently unused.
+- Payout output tests are still needed for missing and underpaid recipients.
 - There are no tests yet for invalid oracle signatures.
 - There are no tests yet for seed order changes.
 - The byte encoding should be mirrored in backend tests.
@@ -535,7 +592,7 @@ Useful research references:
 Existing Cardano oracle providers are mostly feed/statement systems. They are useful for prices or published facts, but this validator currently needs custom signed randomness messages:
 
 ```text
-lotto-v1 | current round end | current pot | oracle seed
+lotto-v1 | oracle slot | current round end | current pot | oracle seed
 ```
 
 This means the current validator fits best with:
@@ -548,7 +605,6 @@ This means the current validator fits best with:
 
 Likely next improvements:
 
-- implement real payout verification;
 - define the backend byte encoder with tests against the example hex;
 - add negative tests for wrong oracle key, wrong pot, wrong round end, wrong seed order;
 - decide whether seeds should be published through on-chain oracle UTxOs instead of redeemer fields;
